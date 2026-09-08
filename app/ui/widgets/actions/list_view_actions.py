@@ -827,9 +827,6 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
         video_seek_slider.setValue(0)
         video_seek_slider.blockSignals(False)
 
-    _set_path_line_edit_value(main_window.targetVideosPathLineEdit, "")
-    main_window.last_target_media_folder_path = ""
-
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
 
     set_target_folder_auto_watch(
@@ -842,7 +839,11 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
+    
+    set_target_folder_auto_watch(
+        main_window,
+        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
+    )
     return True
 
 

@@ -649,12 +649,16 @@ def select_target_medias(
         files_list = QtWidgets.QFileDialog.getOpenFileNames()[0]
         if not files_list:
             return
-        # Get Folder name from the first file
+    # Get Folder name from the first file
         file_dir = misc_helpers.get_dir_of_file(files_list[0])
         main_window.targetVideosPathLineEdit.setText(file_dir)
         main_window.targetVideosPathLineEdit.setToolTip(file_dir)
         main_window.last_target_media_folder_path = file_dir
+
+    main_window._target_folder_seen_paths = set()
+    main_window._target_folder_loading_paths = set()
     main_window._target_folder_ignored_paths = set()
+
     clear_stop_loading_target_media(main_window)
     card_actions.clear_target_faces(main_window)
 
@@ -780,25 +784,33 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
 
     clear_stop_loading_target_media(main_window, clear_list=False)
 
-    # Stop processor first so nothing tries to read a cleared path. Some
-    # lightweight callers only provide the target-media panel, so keep the
-    # processor cleanup optional.
-    vp = getattr(main_window, "video_processor", None)
-    if vp is not None:
-        vp.stop_processing()
-        vp.media_path = None
-        vp.file_type = None
-        vp.current_frame = None
-        if vp.media_capture:
-            try:
-                vp.media_capture.release()
-            except Exception:
-                pass
-            vp.media_capture = None
-        vp._clear_single_frame_preview_caches()
+    # Stop processor first so nothing tries to read a cleared path
+    vp = main_window.video_processor
+    vp.stop_processing()
+    vp.media_path = None
+    vp.file_type = None
+    vp.current_frame = None
+    if vp.media_capture:
+        try:
+            vp.media_capture.release()
+        except Exception:
+            pass
+        vp.media_capture = None
+    vp._clear_single_frame_preview_caches()
 
     # Don't auto-readd these while they still exist on disk
-    main_window._target_folder_ignored_paths = _existing_target_media_paths(main_window)
+    seen = getattr(main_window, "_target_folder_seen_paths", None)
+    if seen is None:
+        seen = set()
+        main_window._target_folder_seen_paths = seen
+    ignored = getattr(main_window, "_target_folder_ignored_paths", None)
+    if ignored is None:
+        ignored = set()
+        main_window._target_folder_ignored_paths = ignored
+    for p in _existing_target_media_paths(main_window):
+        np = _normalize_media_path(p)
+        seen.add(np)
+        ignored.add(np)
 
     # Remove items WHILE selected_video_button is still set so deselect
     # clears the preview for the active item
@@ -812,20 +824,14 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
     main_window.selected_video_button = None
 
     # Ensure preview is cleared even if nothing was selected
-    scene = getattr(main_window, "scene", None)
-    if scene is not None:
-        scene.clear()
-    graphics_view = getattr(main_window, "graphicsViewFrame", None)
-    if graphics_view is not None:
-        graphics_view.update()
+    main_window.scene.clear()
+    main_window.graphicsViewFrame.update()
     if hasattr(main_window, "timelineContainer"):
         main_window.timelineContainer.thumbnail_track.request_thumbnails()
-    video_seek_slider = getattr(main_window, "videoSeekSlider", None)
-    if video_seek_slider is not None:
-        video_seek_slider.blockSignals(True)
-        video_seek_slider.setMaximum(1)
-        video_seek_slider.setValue(0)
-        video_seek_slider.blockSignals(False)
+    main_window.videoSeekSlider.blockSignals(True)
+    main_window.videoSeekSlider.setMaximum(1)
+    main_window.videoSeekSlider.setValue(0)
+    main_window.videoSeekSlider.blockSignals(False)
 
     main_window.placeholder_update_signal.emit(main_window.targetVideosList, False)
 
@@ -839,11 +845,7 @@ def clear_all_target_media(main_window: "MainWindow") -> bool:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    
-    set_target_folder_auto_watch(
-        main_window,
-        bool(main_window.control.get("AutoLoadTargetFolderToggle", False)),
-    )
+
     return True
 
 
@@ -1455,6 +1457,9 @@ def _is_target_media_file_stable(main_window: "MainWindow", path: str) -> bool:
 _TARGET_MEDIA_STABILITY_TIMEOUT_SECONDS = 30.0
 
 
+def _normalize_media_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
 def scan_and_append_new_target_media(main_window: "MainWindow"):
     """Append only new media files from the configured target folder."""
     from app.ui.widgets.actions import video_control_actions
@@ -1477,28 +1482,57 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
         media_files = []
         for dirpath, _, filenames in os.walk(folder):
             for filename in filenames:
-                full = os.path.abspath(os.path.join(dirpath, filename))
+                full = _normalize_media_path(os.path.join(dirpath, filename))
                 if misc_helpers.get_file_type(full):
                     media_files.append(full)
     else:
         media_files = [
-            os.path.abspath(p)
+            _normalize_media_path(p)
             for p in (
                 misc_helpers.get_video_files(folder, False)
                 + misc_helpers.get_image_files(folder, False)
             )
         ]
 
+    seen = getattr(main_window, "_target_folder_seen_paths", None)
+    if seen is None:
+        seen = set()
+        main_window._target_folder_seen_paths = seen
+
+    # Keep your clear-all ignores in sync
     ignored = getattr(main_window, "_target_folder_ignored_paths", None)
     if ignored is None:
         ignored = set()
         main_window._target_folder_ignored_paths = ignored
     else:
-        # Drop ignores for files no longer on disk so a re-added file can load
-        ignored.intersection_update(p for p in list(ignored) if os.path.exists(p))
+        ignored.intersection_update(
+            _normalize_media_path(p) for p in list(ignored) if os.path.exists(p)
+        )
 
-    existing = _existing_target_media_paths(main_window)
-    new_files = [p for p in media_files if p not in existing and p not in ignored]
+    existing = {
+        _normalize_media_path(p) for p in _existing_target_media_paths(main_window)
+    }
+
+    loading = getattr(main_window, "_target_folder_loading_paths", None)
+    if loading is None:
+        loading = set()
+        main_window._target_folder_loading_paths = loading
+
+    pending_queue = getattr(main_window, "_pending_target_media_thumbnails", None)
+    if pending_queue:
+        for item in pending_queue:
+            media_path = item[0]
+            if media_path:
+                loading.add(_normalize_media_path(media_path))
+
+    new_files = [
+        p
+        for p in media_files
+        if p not in existing
+        and p not in seen
+        and p not in ignored
+        and p not in loading
+    ]
     if not new_files:
         return
 
@@ -1534,6 +1568,11 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
         and main_window.video_loader_worker.isRunning()
     ):
         return
+
+    # Mark immediately so recursive dir events cannot re-queue the same files
+    for p in ready_files:
+        seen.add(p)
+        loading.add(p)
 
     main_window.video_loader_worker = ui_workers.TargetMediaLoaderWorker(
         main_window=main_window,
@@ -1583,6 +1622,10 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
 
     if not enabled:
         timer.stop()
+        # OFF clears memory so a later ON can import again
+        main_window._target_folder_seen_paths = set()
+        main_window._target_folder_loading_paths = set()
+        main_window._target_folder_ignored_paths = set()
         return
 
     folder = _get_target_folder_path(main_window)

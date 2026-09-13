@@ -446,7 +446,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         )
         # self.buttonMediaStop.clicked.connect(partial(self.video_processor.stop_processing))
         self.findTargetFacesButton.clicked.connect(
-            partial(card_actions.find_target_faces, self)
+            partial(card_actions.find_target_faces, self, clear_removed_faces=True)
         )
         self.clearTargetFacesButton.clicked.connect(
             partial(card_actions.clear_target_faces, self)

@@ -291,6 +291,7 @@ class TargetMediaCardButton(CardButton):
         video_control_actions.set_up_video_seek_line_edit(main_window)
         # Clear current target faces
         card_actions.clear_target_faces(main_window, refresh_frame=False)
+        main_window._removed_target_face_embeddings = []
         # Check if the user wants to keep input faces/embeddings selected
         # Keep Inputs checked if KeepInput, AutoSwap or Batch is active
         if not (
@@ -1265,6 +1266,25 @@ class TargetFaceCardButton(CardButton):
 
         i = self.get_item_position()
         main_window.targetFacesList.takeItem(i)
+
+        # Remember this face so AutoSwap / seek will not re-add it
+        # until the user presses Find Faces again.
+        recognition_model = str(
+            main_window.control.get("RecognitionModelSelection", "arcface_128")
+        )
+        try:
+            emb = self.get_embedding(recognition_model)
+            if emb is not None:
+                removed = getattr(
+                    main_window, "_removed_target_face_embeddings", None
+                )
+                if removed is None:
+                    removed = []
+                    main_window._removed_target_face_embeddings = removed
+                removed.append(emb.copy() if hasattr(emb, "copy") else emb)
+        except Exception:
+            pass
+
         main_window.target_faces.pop(self.face_id)
         from app.ui.widgets.actions import list_view_actions
 

@@ -1397,16 +1397,17 @@ def _existing_target_media_paths(main_window: "MainWindow") -> set[str]:
     for button in (main_window.target_videos or {}).values():
         media_path = getattr(button, "media_path", None)
         if media_path:
-            paths.add(os.path.abspath(media_path))
+            paths.add(_normalize_media_path(media_path))
     return paths
 
 
 def _collect_watch_dirs(folder: str, recursive: bool) -> list[str]:
+    folder = os.path.abspath(folder)
     dirs = [folder]
     if recursive:
         for dirpath, dirnames, _ in os.walk(folder):
             for d in dirnames:
-                dirs.append(os.path.join(dirpath, d))
+                dirs.append(os.path.abspath(os.path.join(dirpath, d)))
     return dirs
 
 
@@ -1478,6 +1479,7 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
     recursive = bool(
         main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
     )
+
     if recursive:
         media_files = []
         for dirpath, _, filenames in os.walk(folder):
@@ -1499,7 +1501,6 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
         seen = set()
         main_window._target_folder_seen_paths = seen
 
-    # Keep your clear-all ignores in sync
     ignored = getattr(main_window, "_target_folder_ignored_paths", None)
     if ignored is None:
         ignored = set()
@@ -1567,9 +1568,11 @@ def scan_and_append_new_target_media(main_window: "MainWindow"):
         main_window.video_loader_worker is not None
         and main_window.video_loader_worker.isRunning()
     ):
+        timer = getattr(main_window, "_target_folder_watch_timer", None)
+        if timer is not None:
+            timer.start()
         return
 
-    # Mark immediately so recursive dir events cannot re-queue the same files
     for p in ready_files:
         seen.add(p)
         loading.add(p)
@@ -1596,7 +1599,6 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         try:
             watcher = QtCore.QFileSystemWatcher(main_window)
         except TypeError:
-            # Test doubles and non-Qt callers cannot be used as QObject parents.
             watcher = QtCore.QFileSystemWatcher()
         main_window._target_folder_watcher = watcher
 
@@ -1617,12 +1619,23 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         timer.timeout.connect(partial(scan_and_append_new_target_media, main_window))
         main_window._target_folder_watch_timer = timer
 
+    # Always drop every watched path first (releases Windows directory handles)
     for d in list(watcher.directories()):
         watcher.removePath(d)
 
+    poll = getattr(main_window, "_target_folder_poll_timer", None)
+    if poll is None:
+        try:
+            poll = QtCore.QTimer(main_window)
+        except TypeError:
+            poll = QtCore.QTimer()
+        poll.setInterval(3000)
+        poll.timeout.connect(partial(scan_and_append_new_target_media, main_window))
+        main_window._target_folder_poll_timer = poll
+
     if not enabled:
         timer.stop()
-        # OFF clears memory so a later ON can import again
+        poll.stop()
         main_window._target_folder_seen_paths = set()
         main_window._target_folder_loading_paths = set()
         main_window._target_folder_ignored_paths = set()
@@ -1635,7 +1648,14 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
     recursive = bool(
         main_window.control.get("AutoLoadTargetFolderRecursiveToggle", False)
     )
-    for d in _collect_watch_dirs(folder, recursive):
-        watcher.addPath(d)
+
+    # Watch ONLY the root folder. Recursive discovery uses os.walk + poll.
+    # Watching every subdir on Windows locks those folders (Access is denied).
+    watcher.addPath(os.path.abspath(folder))
+
+    if recursive:
+        poll.start()
+    else:
+        poll.stop()
 
     scan_and_append_new_target_media(main_window)

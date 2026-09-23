@@ -158,11 +158,6 @@ def change_theme(main_window: "MainWindow", new_theme):
             "dark_styles.qss",
             "dark",
         )
-    elif new_theme == "80's Neon":
-        _style = get_style_data(
-            "80s_neon.qss",
-            "dark",
-        )
     elif new_theme == "Light":
         _style = get_style_data(
             "light_styles.qss",

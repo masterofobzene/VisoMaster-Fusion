@@ -134,6 +134,16 @@ def clear_merged_embeddings(main_window: "MainWindow"):
         target_face.assigned_merged_embeddings = {}
         target_face.calculate_assigned_input_embedding()
 
+    # Keep active tab state in sync
+    states = getattr(main_window, "embedding_tab_states", None)
+    tabs = getattr(main_window, "embeddingTabs", None)
+    if states and tabs is not None:
+        idx = tabs.currentIndex()
+        if 0 <= idx < len(states):
+            states[idx]["embeddings"] = main_window.merged_embeddings
+            states[idx]["filename"] = ""
+            states[idx]["list_widget"] = main_window.inputEmbeddingsList
+
     # Force VRAM cleanup
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

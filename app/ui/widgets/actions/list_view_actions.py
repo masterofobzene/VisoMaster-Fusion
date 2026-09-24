@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 _WORKER_STOP_TIMEOUT_MS = 1000
-_TARGET_BUTTON_SIZE = (96, 96)
+_TARGET_BUTTON_SIZE = (85, 85)
 _SMALL_FACE_BUTTON_SIZE = (70, 70)
 _LARGE_FACE_BUTTON_SIZE = (96, 96)
 _FACE_BUTTON_SIZE = _SMALL_FACE_BUTTON_SIZE
@@ -511,34 +511,7 @@ def initialize_embeddings_list_widget(main_window: "MainWindow"):
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
 
-    # Smooth / slower wheel scrolling so embedding cards are easier to hit
-    class _SmoothWheelFilter(QtCore.QObject):
-        def __init__(self, list_widget: QtWidgets.QListWidget):
-            super().__init__(list_widget)
-            self._list = list_widget
-            self._step_px = 24  # pixels per wheel notch (lower = slower)
-
-        def eventFilter(self, obj, event):
-            if event.type() == QtCore.QEvent.Type.Wheel:
-                delta = event.angleDelta().y()
-                if delta == 0:
-                    delta = event.angleDelta().x()
-                # Prefer horizontal bar when content is laid out left-to-right
-                hbar = self._list.horizontalScrollBar()
-                vbar = self._list.verticalScrollBar()
-                steps = -1 if delta > 0 else 1
-                if hbar.maximum() > 0:
-                    hbar.setValue(hbar.value() + steps * self._step_px)
-                elif vbar.maximum() > 0:
-                    vbar.setValue(vbar.value() + steps * self._step_px)
-                return True
-            return super().eventFilter(obj, event)
-
-    if not getattr(inputEmbeddingsList, "_smooth_wheel_filter", None):
-        filt = _SmoothWheelFilter(inputEmbeddingsList)
-        inputEmbeddingsList.viewport().installEventFilter(filt)
-        inputEmbeddingsList._smooth_wheel_filter = filt
-
+    _install_smooth_wheel_filter(inputEmbeddingsList)
     inputEmbeddingsList.setHorizontalScrollMode(
         QtWidgets.QAbstractItemView.ScrollPerPixel
     )
@@ -1659,3 +1632,334 @@ def set_target_folder_auto_watch(main_window: "MainWindow", enabled: bool):
         poll.stop()
 
     scan_and_append_new_target_media(main_window)
+
+class _SmoothWheelFilter(QtCore.QObject):
+    def __init__(self, list_widget: QtWidgets.QListWidget):
+        super().__init__(list_widget)
+        self._list = list_widget
+        self._step_px = 24
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if delta == 0:
+                delta = event.angleDelta().x()
+            hbar = self._list.horizontalScrollBar()
+            vbar = self._list.verticalScrollBar()
+            steps = -1 if delta > 0 else 1
+            if hbar.maximum() > 0:
+                hbar.setValue(hbar.value() + steps * self._step_px)
+            elif vbar.maximum() > 0:
+                vbar.setValue(vbar.value() + steps * self._step_px)
+            return True
+        return super().eventFilter(obj, event)
+
+
+def _install_smooth_wheel_filter(list_widget: QtWidgets.QListWidget) -> None:
+    if getattr(list_widget, "_smooth_wheel_filter", None):
+        return
+    filt = _SmoothWheelFilter(list_widget)
+    list_widget.viewport().installEventFilter(filt)
+    list_widget._smooth_wheel_filter = filt
+
+def _make_embeddings_list_widget(main_window: "MainWindow") -> QtWidgets.QListWidget:
+    """Create a list widget configured like the original inputEmbeddingsList."""
+    lw = QtWidgets.QListWidget()
+    lw.setWrapping(True)
+    lw.setFlow(QtWidgets.QListView.TopToBottom)
+    lw.setResizeMode(QtWidgets.QListView.Adjust)
+    lw.setSpacing(4)
+    lw.setUniformItemSizes(False)
+    lw.setViewMode(QtWidgets.QListView.IconMode)
+    lw.setMovement(QtWidgets.QListView.Static)
+    lw.setMinimumHeight(0)
+    lw.setMaximumHeight(16777215)
+    lw.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Expanding,
+    )
+    lw.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    lw.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    lw.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+    lw.setHorizontalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+    lw.setLayoutDirection(QtCore.Qt.LeftToRight)
+    lw.setLayoutMode(QtWidgets.QListView.SinglePass)
+    _install_smooth_wheel_filter(lw)
+    _set_up_panel_context_menu(main_window, lw, "embeddings")
+    return lw
+
+
+def setup_embedding_tabs(main_window: "MainWindow") -> None:
+    """Wrap the existing embeddings list in a tab widget with a + button."""
+    old_list = main_window.inputEmbeddingsList
+    parent = old_list.parent()
+    layout = parent.layout() if parent is not None else None
+
+    tabs_container = QtWidgets.QWidget(parent)
+    tabs_container_layout = QtWidgets.QHBoxLayout(tabs_container)
+    tabs_container_layout.setContentsMargins(0, 0, 0, 0)
+    tabs_container_layout.setSpacing(6)
+
+    tabs = QtWidgets.QTabWidget(tabs_container)
+    tabs.setTabsClosable(True)
+    tabs.setMovable(True)
+    tabs.setDocumentMode(True)
+    tabs.setElideMode(QtCore.Qt.TextElideMode.ElideRight)
+    tabs.setUsesScrollButtons(True)
+    tabs.tabBar().setExpanding(False)
+    tabs.setStyleSheet(
+        """
+        QTabWidget::pane {
+            border: 1px solid #3a3a3a;
+            top: -1px;
+        }
+        QTabBar::tab {
+            padding: 4px 3px 4px 6px;
+            margin-right: 2px;
+        }
+        QTabBar::close-button {
+            subcontrol-position: right;
+            subcontrol-origin: padding;
+            margin: 2px;
+        }
+        """
+    )
+
+    list_h = _EMBED_LIST_HEIGHT
+    tab_bar_h = 26
+    pane_extra = 10
+    total_h = list_h + tab_bar_h + pane_extra
+
+    tabs.setFixedHeight(total_h)
+    tabs.setMinimumHeight(total_h)
+    tabs.setMaximumHeight(total_h)
+    tabs.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Fixed,
+    )
+
+    add_btn = QtWidgets.QToolButton(tabs_container)
+    add_btn.setText("+")
+    add_btn.setToolTip("New embeddings tab")
+    add_btn.setAutoRaise(False)
+    add_btn.setFixedSize(20, 20)
+    add_btn.setStyleSheet(
+        "QToolButton {"
+        "  border: 1px solid #3a3a3a;"
+        "  border-radius: 3px;"
+        "  padding: 0px 0px 2px 0px;"  # lift text up ~2px
+        "}"
+        "QToolButton:hover { border-color: #5a5a5a; }"
+    )
+    add_btn.clicked.connect(partial(add_embedding_tab, main_window))
+
+    tabs_container_layout.addWidget(tabs, 1)
+    tabs_container_layout.addWidget(
+        add_btn, 0, QtCore.Qt.AlignmentFlag.AlignTop
+    )
+
+    if layout is not None:
+        idx = layout.indexOf(old_list)
+        if idx >= 0:
+            row, col, rowspan, colspan = layout.getItemPosition(idx)
+            layout.removeWidget(old_list)
+            layout.addWidget(tabs_container, row, col, rowspan, colspan)
+            if hasattr(layout, "setRowStretch"):
+                layout.setRowStretch(row, 0)
+        else:
+            old_list.hide()
+            tabs_container.setGeometry(old_list.geometry())
+            tabs_container.show()
+    else:
+        old_list.hide()
+
+    main_window.embeddingTabs = tabs
+    main_window.embedding_tab_states = []
+
+    old_list.setParent(tabs)
+    old_list.setMinimumHeight(0)
+    old_list.setMaximumHeight(16777215)
+    old_list.setSizePolicy(
+        QtWidgets.QSizePolicy.Policy.Expanding,
+        QtWidgets.QSizePolicy.Policy.Expanding,
+    )
+
+    add_embedding_tab(
+        main_window,
+        list_widget=old_list,
+        embeddings=main_window.merged_embeddings,
+        filename=getattr(main_window, "loaded_embedding_filename", "") or "",
+        title="Embeddings",
+    )
+
+    tabs.currentChanged.connect(partial(_on_embedding_tab_changed, main_window))
+    tabs.tabCloseRequested.connect(partial(_on_embedding_tab_close, main_window))
+
+def add_embedding_tab(
+    main_window: "MainWindow",
+    list_widget: QtWidgets.QListWidget | None = None,
+    embeddings: dict | None = None,
+    filename: str = "",
+    title: str | None = None,
+) -> int:
+    """Create an embeddings tab (empty by default, or with given list/state)."""
+    tabs: QtWidgets.QTabWidget = main_window.embeddingTabs
+    if list_widget is None:
+        list_widget = _make_embeddings_list_widget(main_window)
+    if embeddings is None:
+        embeddings = {}
+    if title is None:
+        n = len(getattr(main_window, "embedding_tab_states", [])) + 1
+        title = f"Embeddings {n}"
+
+    state = {
+        "list_widget": list_widget,
+        "embeddings": embeddings,
+        "filename": filename or "",
+    }
+    main_window.embedding_tab_states.append(state)
+    index = tabs.addTab(list_widget, title)
+    tabs.setCurrentIndex(index)
+    _activate_embedding_tab(main_window, index)
+    return index
+
+
+def _activate_embedding_tab(main_window: "MainWindow", index: int) -> None:
+    states = getattr(main_window, "embedding_tab_states", [])
+    if index < 0 or index >= len(states):
+        return
+    state = states[index]
+    main_window.inputEmbeddingsList = state["list_widget"]
+    main_window.merged_embeddings = state["embeddings"]
+    main_window.loaded_embedding_filename = state["filename"]
+
+    active_ids = set(main_window.merged_embeddings.keys())
+    for target_face in (main_window.target_faces or {}).values():
+        stale = [
+            eid
+            for eid in list(target_face.assigned_merged_embeddings.keys())
+            if eid not in active_ids
+        ]
+        for eid in stale:
+            target_face.assigned_merged_embeddings.pop(eid, None)
+        if stale:
+            target_face.calculate_assigned_input_embedding()
+
+    if hasattr(main_window, "inputEmbeddingsSearchBox"):
+        filter_actions.filter_merged_embeddings(
+            main_window, main_window.inputEmbeddingsSearchBox.text()
+        )
+
+
+def _on_embedding_tab_changed(main_window: "MainWindow", index: int) -> None:
+    _activate_embedding_tab(main_window, index)
+
+
+def _on_embedding_tab_close(main_window: "MainWindow", index: int) -> None:
+    tabs: QtWidgets.QTabWidget = main_window.embeddingTabs
+    states = main_window.embedding_tab_states
+    if len(states) <= 1:
+        return
+
+    for btn in list(states[index]["embeddings"].values()):
+        try:
+            btn.setChecked(False)
+        except RuntimeError:
+            pass
+
+    tabs.removeTab(index)
+    state = states.pop(index)
+    try:
+        state["list_widget"].deleteLater()
+    except RuntimeError:
+        pass
+
+    new_index = min(index, len(states) - 1)
+    tabs.setCurrentIndex(new_index)
+    _activate_embedding_tab(main_window, new_index)
+
+
+def update_active_embedding_tab_title(main_window: "MainWindow") -> None:
+    """Set the current tab title from the loaded filename."""
+    tabs = getattr(main_window, "embeddingTabs", None)
+    if tabs is None:
+        return
+    index = tabs.currentIndex()
+    if index < 0:
+        return
+    states = main_window.embedding_tab_states
+    if index >= len(states):
+        return
+    filename = states[index].get("filename") or ""
+    if filename:
+        title = Path(filename).stem
+    else:
+        title = f"Embeddings {index + 1}"
+    tabs.setTabText(index, title)
+    tabs.setTabToolTip(index, filename or title)
+
+
+def get_embedding_tabs_state(main_window: "MainWindow") -> dict:
+    """Snapshot of open embedding tabs for workspace save."""
+    states = getattr(main_window, "embedding_tab_states", None) or []
+    tabs = getattr(main_window, "embeddingTabs", None)
+    active = tabs.currentIndex() if tabs is not None else 0
+    out = []
+    for i, state in enumerate(states):
+        filename = state.get("filename") or ""
+        title = ""
+        if tabs is not None and i < tabs.count():
+            title = tabs.tabText(i)
+        out.append({"filename": filename, "title": title})
+    return {"tabs": out, "active_index": max(0, active)}
+
+
+def restore_embedding_tabs_state(main_window: "MainWindow", data: dict) -> None:
+    """Rebuild embedding tabs from workspace data."""
+    from app.ui.widgets.actions import save_load_actions
+    from app.ui.widgets.actions import card_actions
+
+    if not getattr(main_window, "embeddingTabs", None):
+        return
+
+    tabs_data = (data or {}).get("tabs") or []
+    active_index = int((data or {}).get("active_index", 0))
+
+    while len(main_window.embedding_tab_states) > 1:
+        _on_embedding_tab_close(main_window, len(main_window.embedding_tab_states) - 1)
+
+    main_window.embeddingTabs.setCurrentIndex(0)
+    _activate_embedding_tab(main_window, 0)
+    card_actions.clear_merged_embeddings(main_window)
+    states = main_window.embedding_tab_states
+    if states:
+        states[0]["filename"] = ""
+        states[0]["embeddings"] = main_window.merged_embeddings
+    main_window.embeddingTabs.setTabText(0, "Embeddings")
+
+    if not tabs_data:
+        return
+
+    first = True
+    for i, tab_info in enumerate(tabs_data):
+        filename = (tab_info.get("filename") or "").strip()
+        title = (tab_info.get("title") or "").strip() or (
+            Path(filename).stem if filename else f"Embeddings {i + 1}"
+        )
+
+        if first:
+            first = False
+            main_window.embeddingTabs.setTabText(0, title)
+        else:
+            add_embedding_tab(main_window, title=title)
+
+        if filename and os.path.isfile(filename):
+            save_load_actions.load_embeddings_into_current_tab(
+                main_window, filename
+            )
+        update_active_embedding_tab_title(main_window)
+
+    if tabs_data:
+        idx = min(max(0, active_index), len(main_window.embedding_tab_states) - 1)
+        main_window.embeddingTabs.setCurrentIndex(idx)
+        _activate_embedding_tab(main_window, idx)

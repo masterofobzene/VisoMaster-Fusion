@@ -1845,9 +1845,23 @@ def _activate_embedding_tab(main_window: "MainWindow", index: int) -> None:
         if stale:
             target_face.calculate_assigned_input_embedding()
 
-    if hasattr(main_window, "inputEmbeddingsSearchBox"):
-        filter_actions.filter_merged_embeddings(
-            main_window, main_window.inputEmbeddingsSearchBox.text()
+    # The filter worker is created once at startup and bound to the first
+    # tab's list. Recreate it against the newly-active tab's list so the
+    # search box filters the correct widget.
+    main_window.merged_embeddings_filter_worker = ui_workers.FilterWorker(
+        main_window=main_window,
+        search_text="",
+        filter_list="merged_embeddings",
+    )
+
+    search_box = getattr(main_window, "inputEmbeddingsSearchBox", None)
+    if search_box is not None:
+        search_box.blockSignals(True)
+        search_box.clear()
+        search_box.blockSignals(False)
+        QtCore.QTimer.singleShot(
+            0,
+            partial(filter_actions.filter_merged_embeddings, main_window, ""),
         )
 
 
